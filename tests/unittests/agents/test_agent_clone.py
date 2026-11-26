@@ -1,0 +1,941 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Testings for the clone functionality of agents."""
+
+from typing import Any
+from typing import Callable
+from typing import cast
+from typing import Iterable
+
+from google.adk.agents.llm.task._finish_task_tool import FinishTaskTool
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.loop_agent import LoopAgent
+from google.adk.agents.parallel_agent import ParallelAgent
+from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.tools.agent_tool import _SingleTurnAgentTool
+from google.adk.tools.agent_tool import _TaskAgentTool
+from google.adk.tools.agent_tool import AgentTool
+from google.genai import types
+from pydantic import BaseModel
+import pytest
+from typing_extensions import override
+
+from .. import testing_utils
+
+
+def test_llm_agent_clone():
+  """Test cloning an LLM agent."""
+  # Create an LLM agent
+  original = LlmAgent(
+      name="llm_agent",
+      description="An LLM agent",
+      instruction="You are a helpful assistant.",
+  )
+
+  # Clone it with name update
+  cloned = original.clone(update={"name": "cloned_llm_agent"})
+
+  # Verify the clone
+  assert cloned.name == "cloned_llm_agent"
+  assert cloned.description == "An LLM agent"
+  assert cloned.instruction == "You are a helpful assistant."
+  assert cloned.parent_agent is None
+  assert len(cloned.sub_agents) == 0
+  assert isinstance(cloned, LlmAgent)
+
+  # Verify the original is unchanged
+  assert original.name == "llm_agent"
+  assert original.instruction == "You are a helpful assistant."
+
+
+def test_agent_with_sub_agents():
+  """Test cloning an agent that has sub-agents."""
+  # Create sub-agents
+  sub_agent1 = LlmAgent(name="sub_agent1", description="First sub-agent")
+  sub_agent2 = LlmAgent(name="sub_agent2", description="Second sub-agent")
+
+  # Create a parent agent with sub-agents
+  original = SequentialAgent(
+      name="parent_agent",
+      description="Parent agent with sub-agents",
+      sub_agents=[sub_agent1, sub_agent2],
+  )
+
+  # Clone it with name update
+  cloned = original.clone(update={"name": "cloned_parent"})
+
+  # Verify the clone has sub-agents (deep copy behavior)
+  assert cloned.name == "cloned_parent"
+  assert cloned.description == "Parent agent with sub-agents"
+  assert cloned.parent_agent is None
+  assert len(cloned.sub_agents) == 2
+
+  # Sub-agents should be cloned with their original names
+  assert cloned.sub_agents[0].name == "sub_agent1"
+  assert cloned.sub_agents[1].name == "sub_agent2"
+
+  # Sub-agents should have the cloned agent as their parent
+  assert cloned.sub_agents[0].parent_agent == cloned
+  assert cloned.sub_agents[1].parent_agent == cloned
+
+  # Sub-agents should be different objects from the original
+  assert cloned.sub_agents[0] is not original.sub_agents[0]
+  assert cloned.sub_agents[1] is not original.sub_agents[1]
+
+  # Verify the original still has sub-agents
+  assert original.name == "parent_agent"
+  assert len(original.sub_agents) == 2
+  assert original.sub_agents[0].name == "sub_agent1"
+  assert original.sub_agents[1].name == "sub_agent2"
+  assert original.sub_agents[0].parent_agent == original
+  assert original.sub_agents[1].parent_agent == original
+
+
+def test_three_level_nested_agent():
+  """Test cloning a three-level nested agent to verify recursive cloning logic."""
+  # Create third-level agents (leaf nodes)
+  leaf_agent1 = LlmAgent(name="leaf1", description="First leaf agent")
+  leaf_agent2 = LlmAgent(name="leaf2", description="Second leaf agent")
+
+  # Create second-level agents
+  middle_agent1 = SequentialAgent(
+      name="middle1", description="First middle agent", sub_agents=[leaf_agent1]
+  )
+  middle_agent2 = ParallelAgent(
+      name="middle2",
+      description="Second middle agent",
+      sub_agents=[leaf_agent2],
+  )
+
+  # Create top-level agent
+  root_agent = LoopAgent(
+      name="root_agent",
+      description="Root agent with three levels",
+      max_iterations=5,
+      sub_agents=[middle_agent1, middle_agent2],
+  )
+
+  # Clone the root agent
+  cloned_root = root_agent.clone(update={"name": "cloned_root"})
+
+  # Verify root level
+  assert cloned_root.name == "cloned_root"
+  assert cloned_root.description == "Root agent with three levels"
+  assert cloned_root.max_iterations == 5
+  assert cloned_root.parent_agent is None
+  assert len(cloned_root.sub_agents) == 2
+  assert isinstance(cloned_root, LoopAgent)
+
+  # Verify middle level
+  cloned_middle1 = cloned_root.sub_agents[0]
+  cloned_middle2 = cloned_root.sub_agents[1]
+
+  assert cloned_middle1.name == "middle1"
+  assert cloned_middle1.description == "First middle agent"
+  assert cloned_middle1.parent_agent == cloned_root
+  assert len(cloned_middle1.sub_agents) == 1
+  assert isinstance(cloned_middle1, SequentialAgent)
+
+  assert cloned_middle2.name == "middle2"
+  assert cloned_middle2.description == "Second middle agent"
+  assert cloned_middle2.parent_agent == cloned_root
+  assert len(cloned_middle2.sub_agents) == 1
+  assert isinstance(cloned_middle2, ParallelAgent)
+
+  # Verify leaf level
+  cloned_leaf1 = cloned_middle1.sub_agents[0]
+  cloned_leaf2 = cloned_middle2.sub_agents[0]
+
+  assert cloned_leaf1.name == "leaf1"
+  assert cloned_leaf1.description == "First leaf agent"
+  assert cloned_leaf1.parent_agent == cloned_middle1
+  assert len(cloned_leaf1.sub_agents) == 0
+  assert isinstance(cloned_leaf1, LlmAgent)
+
+  assert cloned_leaf2.name == "leaf2"
+  assert cloned_leaf2.description == "Second leaf agent"
+  assert cloned_leaf2.parent_agent == cloned_middle2
+  assert len(cloned_leaf2.sub_agents) == 0
+  assert isinstance(cloned_leaf2, LlmAgent)
+
+  # Verify all objects are different from originals
+  assert cloned_root is not root_agent
+  assert cloned_middle1 is not middle_agent1
+  assert cloned_middle2 is not middle_agent2
+  assert cloned_leaf1 is not leaf_agent1
+  assert cloned_leaf2 is not leaf_agent2
+
+  # Verify original structure is unchanged
+  assert root_agent.name == "root_agent"
+  assert root_agent.sub_agents[0].name == "middle1"
+  assert root_agent.sub_agents[1].name == "middle2"
+  assert root_agent.sub_agents[0].sub_agents[0].name == "leaf1"
+  assert root_agent.sub_agents[1].sub_agents[0].name == "leaf2"
+
+
+def test_multiple_clones():
+  """Test creating multiple clones with automatic naming."""
+  # Create multiple agents and clone each one
+  original = LlmAgent(
+      name="original_agent", description="Agent for multiple cloning"
+  )
+
+  # Test multiple clones from the same original
+  clone1 = original.clone(update={"name": "clone1"})
+  clone2 = original.clone(update={"name": "clone2"})
+
+  assert clone1.name == "clone1"
+  assert clone2.name == "clone2"
+  assert clone1 is not clone2
+
+
+def test_clone_with_complex_configuration():
+  """Test cloning an agent with complex configuration."""
+  # Create an LLM agent with various configurations
+  original = LlmAgent(
+      name="complex_agent",
+      description="A complex agent with many settings",
+      instruction="You are a specialized assistant.",
+      global_instruction="Always be helpful and accurate.",
+      disallow_transfer_to_parent=True,
+      disallow_transfer_to_peers=True,
+      include_contents="none",
+  )
+
+  # Clone it with name update
+  cloned = original.clone(update={"name": "complex_clone"})
+
+  # Verify all configurations are preserved
+  assert cloned.name == "complex_clone"
+  assert cloned.description == "A complex agent with many settings"
+  assert cloned.instruction == "You are a specialized assistant."
+  assert cloned.global_instruction == "Always be helpful and accurate."
+  assert cloned.disallow_transfer_to_parent is True
+  assert cloned.disallow_transfer_to_peers is True
+  assert cloned.include_contents == "none"
+
+  # Verify parent and sub-agents are set
+  assert cloned.parent_agent is None
+  assert len(cloned.sub_agents) == 0
+
+
+def test_clone_without_updates():
+  """Test cloning without providing updates (should use original values)."""
+  original = LlmAgent(name="test_agent", description="Test agent")
+
+  cloned = original.clone()
+
+  assert cloned.name == "test_agent"
+  assert cloned.description == "Test agent"
+
+
+def test_clone_with_multiple_updates():
+  """Test cloning with multiple field updates."""
+  original = LlmAgent(
+      name="original_agent",
+      description="Original description",
+      instruction="Original instruction",
+  )
+
+  cloned = original.clone(
+      update={
+          "name": "updated_agent",
+          "description": "Updated description",
+          "instruction": "Updated instruction",
+      }
+  )
+
+  assert cloned.name == "updated_agent"
+  assert cloned.description == "Updated description"
+  assert cloned.instruction == "Updated instruction"
+
+
+def test_clone_with_sub_agents_deep_copy():
+  """Test cloning with deep copy of sub-agents."""
+  # Create an agent with sub-agents
+  sub_agent = LlmAgent(name="sub_agent", description="Sub agent")
+  original = LlmAgent(
+      name="root_agent",
+      description="Root agent",
+      sub_agents=[sub_agent],
+  )
+
+  # Clone with deep copy
+  cloned = original.clone(update={"name": "cloned_root_agent"})
+  assert cloned.name == "cloned_root_agent"
+  assert cloned.sub_agents[0].name == "sub_agent"
+  assert cloned.sub_agents[0].parent_agent == cloned
+  assert cloned.sub_agents[0] is not original.sub_agents[0]
+
+
+def test_clone_invalid_field():
+  """Test that cloning with invalid fields raises an error."""
+  original = LlmAgent(name="test_agent", description="Test agent")
+
+  with pytest.raises(ValueError, match="Cannot update nonexistent fields"):
+    original.clone(update={"invalid_field": "value"})
+
+
+def test_clone_parent_agent_field():
+  """Test that cloning with parent_agent field raises an error."""
+  original = LlmAgent(name="test_agent", description="Test agent")
+
+  with pytest.raises(
+      ValueError, match="Cannot update `parent_agent` field in clone"
+  ):
+    original.clone(update={"parent_agent": None})
+
+
+def test_clone_preserves_agent_type():
+  """Test that cloning preserves the specific agent type."""
+  # Test LlmAgent
+  llm_original = LlmAgent(name="llm_test")
+  llm_cloned = llm_original.clone()
+  assert isinstance(llm_cloned, LlmAgent)
+
+  # Test SequentialAgent
+  seq_original = SequentialAgent(
+      name="seq_test", sub_agents=[LlmAgent(name="dummy_seq")]
+  )
+  seq_cloned = seq_original.clone()
+  assert isinstance(seq_cloned, SequentialAgent)
+
+  # Test ParallelAgent
+  par_original = ParallelAgent(
+      name="par_test", sub_agents=[LlmAgent(name="dummy_par")]
+  )
+  par_cloned = par_original.clone()
+  assert isinstance(par_cloned, ParallelAgent)
+
+  # Test LoopAgent
+  loop_original = LoopAgent(
+      name="loop_test", sub_agents=[LlmAgent(name="dummy_loop")]
+  )
+  loop_cloned = loop_original.clone()
+  assert isinstance(loop_cloned, LoopAgent)
+
+
+def test_clone_with_agent_specific_fields():
+  # Test LoopAgent
+  dummy = LlmAgent(name="dummy")
+  loop_original = LoopAgent(name="loop_test", sub_agents=[dummy])
+  loop_cloned = loop_original.clone({"max_iterations": 10})
+  assert isinstance(loop_cloned, LoopAgent)
+  assert loop_cloned.max_iterations == 10
+
+
+def test_clone_with_none_update():
+  """Test cloning with explicit None update parameter."""
+  original = LlmAgent(name="test_agent", description="Test agent")
+
+  cloned = original.clone(update=None)
+
+  assert cloned.name == "test_agent"
+  assert cloned.description == "Test agent"
+  assert cloned is not original
+
+
+def test_clone_with_empty_update():
+  """Test cloning with empty update dictionary."""
+  original = LlmAgent(name="test_agent", description="Test agent")
+
+  cloned = original.clone(update={})
+
+  assert cloned.name == "test_agent"
+  assert cloned.description == "Test agent"
+  assert cloned is not original
+
+
+def test_clone_with_sub_agents_update():
+  """Test cloning with sub_agents provided in update."""
+  # Create original sub-agents
+  original_sub1 = LlmAgent(name="original_sub1", description="Original sub 1")
+  original_sub2 = LlmAgent(name="original_sub2", description="Original sub 2")
+
+  # Create new sub-agents for the update
+  new_sub1 = LlmAgent(name="new_sub1", description="New sub 1")
+  new_sub2 = LlmAgent(name="new_sub2", description="New sub 2")
+
+  # Create original agent with sub-agents
+  original = SequentialAgent(
+      name="original_agent",
+      description="Original agent",
+      sub_agents=[original_sub1, original_sub2],
+  )
+
+  # Clone with sub_agents update
+  cloned = original.clone(
+      update={"name": "cloned_agent", "sub_agents": [new_sub1, new_sub2]}
+  )
+
+  # Verify the clone uses the new sub-agents
+  assert cloned.name == "cloned_agent"
+  assert len(cloned.sub_agents) == 2
+  assert cloned.sub_agents[0].name == "new_sub1"
+  assert cloned.sub_agents[1].name == "new_sub2"
+  assert cloned.sub_agents[0].parent_agent == cloned
+  assert cloned.sub_agents[1].parent_agent == cloned
+
+  # Verify original is unchanged
+  assert original.name == "original_agent"
+  assert len(original.sub_agents) == 2
+  assert original.sub_agents[0].name == "original_sub1"
+  assert original.sub_agents[1].name == "original_sub2"
+
+
+def _check_lists_contain_same_contents(*lists: Iterable[list[Any]]) -> None:
+  """Assert that all provided lists contain the same elements."""
+  if lists:
+    first_list = lists[0]
+    assert all(len(lst) == len(first_list) for lst in lists)
+    for idx, elem in enumerate(first_list):
+      assert all(lst[idx] is elem for lst in lists)
+
+
+def test_clone_shallow_copies_lists():
+  """Test that cloning shallow copies fields stored as lists."""
+  # Define the list fields
+  before_agent_callback = [lambda *args, **kwargs: None]
+  after_agent_callback = [lambda *args, **kwargs: None]
+  before_model_callback = [lambda *args, **kwargs: None]
+  after_model_callback = [lambda *args, **kwargs: None]
+  before_tool_callback = [lambda *args, **kwargs: None]
+  after_tool_callback = [lambda *args, **kwargs: None]
+  tools = [lambda *args, **kwargs: None]
+
+  # Create the original agent with list fields
+  original = LlmAgent(
+      name="original_agent",
+      description="Original agent",
+      before_agent_callback=before_agent_callback,
+      after_agent_callback=after_agent_callback,
+      before_model_callback=before_model_callback,
+      after_model_callback=after_model_callback,
+      before_tool_callback=before_tool_callback,
+      after_tool_callback=after_tool_callback,
+      tools=tools,
+  )
+
+  # Clone the agent
+  cloned = original.clone()
+
+  # Verify the lists are copied
+  assert original.before_agent_callback is not cloned.before_agent_callback
+  assert original.after_agent_callback is not cloned.after_agent_callback
+  assert original.before_model_callback is not cloned.before_model_callback
+  assert original.after_model_callback is not cloned.after_model_callback
+  assert original.before_tool_callback is not cloned.before_tool_callback
+  assert original.after_tool_callback is not cloned.after_tool_callback
+  assert original.tools is not cloned.tools
+
+  # Verify the list copies are shallow
+  _check_lists_contain_same_contents(
+      before_agent_callback,
+      original.before_agent_callback,
+      cloned.before_agent_callback,
+  )
+  _check_lists_contain_same_contents(
+      after_agent_callback,
+      original.after_agent_callback,
+      cloned.after_agent_callback,
+  )
+  _check_lists_contain_same_contents(
+      before_model_callback,
+      original.before_model_callback,
+      cloned.before_model_callback,
+  )
+  _check_lists_contain_same_contents(
+      after_model_callback,
+      original.after_model_callback,
+      cloned.after_model_callback,
+  )
+  _check_lists_contain_same_contents(
+      before_tool_callback,
+      original.before_tool_callback,
+      cloned.before_tool_callback,
+  )
+  _check_lists_contain_same_contents(
+      after_tool_callback,
+      original.after_tool_callback,
+      cloned.after_tool_callback,
+  )
+  _check_lists_contain_same_contents(tools, original.tools, cloned.tools)
+
+
+def test_clone_shallow_copies_lists_with_sub_agents():
+  """Test that cloning recursively shallow copies fields stored as lists."""
+  # Define the list fields for the sub-agent
+  before_agent_callback = [lambda *args, **kwargs: None]
+  after_agent_callback = [lambda *args, **kwargs: None]
+  before_model_callback = [lambda *args, **kwargs: None]
+  after_model_callback = [lambda *args, **kwargs: None]
+  before_tool_callback = [lambda *args, **kwargs: None]
+  after_tool_callback = [lambda *args, **kwargs: None]
+  tools = [lambda *args, **kwargs: None]
+
+  # Create the original sub-agent with list fields and the top-level agent
+  sub_agents = [
+      LlmAgent(
+          name="sub_agent",
+          description="Sub agent",
+          before_agent_callback=before_agent_callback,
+          after_agent_callback=after_agent_callback,
+          before_model_callback=before_model_callback,
+          after_model_callback=after_model_callback,
+          before_tool_callback=before_tool_callback,
+          after_tool_callback=after_tool_callback,
+          tools=tools,
+      )
+  ]
+  original = LlmAgent(
+      name="original_agent",
+      description="Original agent",
+      sub_agents=sub_agents,
+  )
+
+  # Clone the top-level agent
+  cloned = original.clone()
+
+  # Verify the sub_agents list is copied for the top-level agent
+  assert original.sub_agents is not cloned.sub_agents
+
+  # Retrieve the sub-agent for the original and cloned top-level agent
+  original_sub_agent = cast(LlmAgent, original.sub_agents[0])
+  cloned_sub_agent = cast(LlmAgent, cloned.sub_agents[0])
+
+  # Verify the lists are copied for the sub-agent
+  assert (
+      original_sub_agent.before_agent_callback
+      is not cloned_sub_agent.before_agent_callback
+  )
+  assert (
+      original_sub_agent.after_agent_callback
+      is not cloned_sub_agent.after_agent_callback
+  )
+  assert (
+      original_sub_agent.before_model_callback
+      is not cloned_sub_agent.before_model_callback
+  )
+  assert (
+      original_sub_agent.after_model_callback
+      is not cloned_sub_agent.after_model_callback
+  )
+  assert (
+      original_sub_agent.before_tool_callback
+      is not cloned_sub_agent.before_tool_callback
+  )
+  assert (
+      original_sub_agent.after_tool_callback
+      is not cloned_sub_agent.after_tool_callback
+  )
+  assert original_sub_agent.tools is not cloned_sub_agent.tools
+
+  # Verify the list copies are shallow for the sub-agent
+  _check_lists_contain_same_contents(
+      before_agent_callback,
+      original_sub_agent.before_agent_callback,
+      cloned_sub_agent.before_agent_callback,
+  )
+  _check_lists_contain_same_contents(
+      after_agent_callback,
+      original_sub_agent.after_agent_callback,
+      cloned_sub_agent.after_agent_callback,
+  )
+  _check_lists_contain_same_contents(
+      before_model_callback,
+      original_sub_agent.before_model_callback,
+      cloned_sub_agent.before_model_callback,
+  )
+  _check_lists_contain_same_contents(
+      after_model_callback,
+      original_sub_agent.after_model_callback,
+      cloned_sub_agent.after_model_callback,
+  )
+  _check_lists_contain_same_contents(
+      before_tool_callback,
+      original_sub_agent.before_tool_callback,
+      cloned_sub_agent.before_tool_callback,
+  )
+  _check_lists_contain_same_contents(
+      after_tool_callback,
+      original_sub_agent.after_tool_callback,
+      cloned_sub_agent.after_tool_callback,
+  )
+  _check_lists_contain_same_contents(
+      tools, original_sub_agent.tools, cloned_sub_agent.tools
+  )
+
+
+def test_clone_rebinds_callbacks_bound_to_the_original_agent():
+  """A callback that is one of the agent's own methods follows the clone."""
+  ran_for: list[str] = []
+
+  class _Agent(LlmAgent):
+
+    def __init__(self, **kwargs: Any):
+      super().__init__(**kwargs)
+      self.before_agent_callback = self._record
+
+    def _record(self, callback_context: Any) -> None:
+      ran_for.append(self.name)
+
+  original = _Agent(name="agent")
+  cloned = original.clone(update={"name": "cloned"})
+
+  cloned.before_agent_callback(None)
+
+  assert ran_for == ["cloned"]
+
+
+def test_clone_rebinds_callbacks_bound_to_the_original_agent_in_a_list():
+  """Every one of the agent's own methods in a list field follows the clone."""
+  ran_for: list[str] = []
+
+  class _Agent(LlmAgent):
+
+    def __init__(self, **kwargs: Any):
+      super().__init__(**kwargs)
+      self.before_agent_callback = [self._record]
+
+    def _record(self, callback_context: Any) -> None:
+      ran_for.append(self.name)
+
+  original = _Agent(name="agent")
+  cloned = original.clone(update={"name": "cloned"})
+
+  cloned.before_agent_callback[0](None)
+
+  assert ran_for == ["cloned"]
+
+
+def test_clone_keeps_callbacks_bound_to_another_object():
+  """A callback bound to something other than the agent is left alone."""
+
+  class _Recorder:
+
+    def __init__(self) -> None:
+      self.contexts: list[Any] = []
+
+    def before(self, callback_context: Any) -> None:
+      self.contexts.append(callback_context)
+
+  recorder = _Recorder()
+  original = LlmAgent(name="agent", before_agent_callback=recorder.before)
+  cloned = original.clone()
+
+  cloned.before_agent_callback(None)
+
+  assert cloned.before_agent_callback.__self__ is recorder
+  assert len(recorder.contexts) == 1
+
+
+def _sub_agent_tools(agent: LlmAgent) -> list[Any]:
+  return [
+      tool
+      for tool in agent.tools
+      if isinstance(tool, (_SingleTurnAgentTool, _TaskAgentTool))
+  ]
+
+
+def _ids(items: Iterable[Any]) -> list[int]:
+  """Agents and tools are pydantic models, so compare them by identity."""
+  return [id(item) for item in items]
+
+
+def _wrapped_agent_ids(agent: LlmAgent) -> list[int]:
+  return _ids(tool.agent for tool in _sub_agent_tools(agent))
+
+
+@pytest.mark.parametrize("mode", ["single_turn", "task"])
+def test_clone_wraps_its_own_sub_agents(mode: str):
+  """The clone's sub-agent tools run the clone's sub-agents."""
+  original = LlmAgent(
+      name="root",
+      sub_agents=[LlmAgent(name="helper", description="Helps", mode=mode)],
+  )
+
+  cloned = original.clone()
+
+  assert _wrapped_agent_ids(cloned) == _ids(cloned.sub_agents)
+  assert cloned.sub_agents[0] is not original.sub_agents[0]
+
+
+@pytest.mark.parametrize("mode", ["single_turn", "task"])
+def test_clone_of_a_clone_wraps_its_own_sub_agents(mode: str):
+  """Cloning a clone rebuilds the sub-agent tools again for the new copy."""
+  original = LlmAgent(
+      name="root",
+      sub_agents=[LlmAgent(name="helper", description="Helps", mode=mode)],
+  )
+
+  cloned = original.clone().clone()
+
+  assert _wrapped_agent_ids(cloned) == _ids(cloned.sub_agents)
+
+
+@pytest.mark.parametrize("mode", ["single_turn", "task"])
+def test_clone_leaves_the_original_sub_agent_tools_unchanged(mode: str):
+  """Cloning does not touch the original agent's sub-agent tools."""
+  original = LlmAgent(
+      name="root",
+      sub_agents=[LlmAgent(name="helper", description="Helps", mode=mode)],
+  )
+  original_tools = list(original.tools)
+
+  original.clone()
+
+  assert _ids(original.tools) == _ids(original_tools)
+  assert _wrapped_agent_ids(original) == _ids(original.sub_agents)
+
+
+@pytest.mark.parametrize("mode", ["single_turn", "task"])
+def test_clone_with_sub_agents_update_wraps_the_new_sub_agents(mode: str):
+  """Sub-agents passed in the update replace the original's sub-agent tools."""
+  original = LlmAgent(
+      name="root",
+      sub_agents=[LlmAgent(name="helper", description="Helps", mode=mode)],
+  )
+  new_sub_agent = LlmAgent(name="other", description="Other", mode=mode)
+
+  cloned = original.clone(update={"sub_agents": [new_sub_agent]})
+
+  assert _wrapped_agent_ids(cloned) == _ids([new_sub_agent])
+
+
+def test_clone_with_tools_update_keeps_sub_agent_tools():
+  """Tools passed in the update are used alongside the sub-agent tools."""
+
+  def lookup() -> str:
+    return "found"
+
+  original = LlmAgent(
+      name="root",
+      sub_agents=[
+          LlmAgent(name="helper", description="Helps", mode="single_turn")
+      ],
+  )
+  tools = [lookup]
+
+  cloned = original.clone(update={"tools": tools})
+
+  assert cloned.tools[0] is lookup
+  assert _wrapped_agent_ids(cloned) == _ids(cloned.sub_agents)
+  assert tools == [lookup]
+
+
+@pytest.mark.parametrize(
+    ("start_mode", "new_mode", "expected_tool_types"),
+    [
+        ("chat", "task", [FinishTaskTool]),
+        ("task", "chat", []),
+    ],
+)
+def test_clone_with_mode_update_follows_the_new_mode(
+    start_mode: str, new_mode: str, expected_tool_types: list[type[Any]]
+):
+  """finish_task follows the clone's mode."""
+  original = LlmAgent(name="agent", mode=start_mode)
+
+  cloned = original.clone(update={"mode": new_mode})
+
+  assert [type(tool) for tool in cloned.tools] == expected_tool_types
+
+
+def test_clone_of_task_agent_gets_its_own_finish_task():
+  """A task-mode clone gets a finish_task built for it, not the original's."""
+  original = LlmAgent(name="agent", mode="task")
+
+  cloned = original.clone()
+
+  assert [type(tool) for tool in cloned.tools] == [FinishTaskTool]
+  assert cloned.tools[0] is not original.tools[0]
+
+
+def test_clone_keeps_other_tools_first_and_mode_tools_after():
+  """Other tools keep their order and the rebuilt mode tools follow them."""
+
+  def lookup() -> str:
+    return "found"
+
+  def search() -> str:
+    return "searched"
+
+  original = LlmAgent(
+      name="root",
+      mode="task",
+      tools=[lookup, search],
+      sub_agents=[
+          LlmAgent(name="helper", description="Helps", mode="single_turn"),
+          LlmAgent(name="worker", description="Works", mode="task"),
+      ],
+  )
+
+  cloned = original.clone()
+
+  assert cloned.tools[:2] == [lookup, search]
+  assert [type(tool) for tool in cloned.tools[2:]] == [
+      FinishTaskTool,
+      _SingleTurnAgentTool,
+      _TaskAgentTool,
+  ]
+  assert _wrapped_agent_ids(cloned) == _ids(cloned.sub_agents)
+
+
+def test_clone_with_output_schema_update_rebuilds_finish_task():
+  """finish_task validates against the clone's output schema."""
+
+  class _Output(BaseModel):
+    answer: str
+
+  original = LlmAgent(name="agent", mode="task")
+
+  cloned = original.clone(update={"output_schema": _Output})
+
+  assert [tool.output_schema for tool in cloned.tools] == [_Output]
+
+
+@pytest.mark.asyncio
+async def test_clone_delegates_to_its_own_single_turn_sub_agent():
+  """A single-turn call from a clone runs the clone's sub-agent."""
+  helper_model = testing_utils.MockModel.create(responses=["helped"])
+  original = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create(
+          responses=[
+              [
+                  types.Part.from_function_call(
+                      name="helper", args={"request": "help"}
+                  )
+              ],
+              "done",
+          ]
+      ),
+      sub_agents=[
+          LlmAgent(
+              name="helper",
+              description="Helps",
+              mode="single_turn",
+              instruction="original instruction",
+              model=helper_model,
+          )
+      ],
+  )
+  cloned = original.clone()
+  cloned.sub_agents[0].instruction = "cloned instruction"
+
+  await testing_utils.InMemoryRunner(root_agent=cloned).run_async("hi")
+
+  assert [
+      request.config.system_instruction for request in helper_model.requests
+  ] == ["cloned instruction"]
+
+
+class _CustomSubAgentTool(AgentTool):
+  """A sub-agent tool a caller swaps in for ADK's own."""
+
+
+class _AgentWithCustomSubAgentTools(LlmAgent):
+  """Replaces the stock sub-agent tools after construction."""
+
+  @override
+  def model_post_init(self, context: Any) -> None:
+    super().model_post_init(context)
+    self.tools = [
+        _CustomSubAgentTool(tool.agent)
+        if isinstance(tool, (_SingleTurnAgentTool, _TaskAgentTool))
+        else tool
+        for tool in self.tools
+    ]
+
+
+@pytest.mark.parametrize("mode", ["single_turn", "task"])
+def test_clone_keeps_sub_agent_tools_a_subclass_swapped_in(mode: str):
+  """A custom sub-agent tool is not joined by a stock one on the clone."""
+  original = _AgentWithCustomSubAgentTools(
+      name="root",
+      sub_agents=[LlmAgent(name="helper", description="Helps", mode=mode)],
+  )
+
+  cloned = original.clone()
+
+  assert [type(tool) for tool in cloned.tools] == [_CustomSubAgentTool]
+  assert cloned.tools[0] is original.tools[0]
+
+
+def test_clone_does_not_duplicate_a_tool_added_for_a_sub_agent():
+  """A tool added later under a sub-agent's name is the only one for it."""
+  helper = LlmAgent(name="helper", description="Helps")
+  original = LlmAgent(name="root", sub_agents=[helper])
+  custom_tool = AgentTool(helper)
+  original.tools.append(custom_tool)
+  helper.mode = "task"
+
+  cloned = original.clone()
+
+  assert _ids(cloned.tools) == _ids([custom_tool])
+
+
+def test_clone_keeps_a_finish_task_added_outside_task_mode():
+  """A finish_task added to a non-task agent is kept, not dropped."""
+  original = LlmAgent(name="agent", mode="chat")
+  finish_task = FinishTaskTool(original)
+  original.tools.append(finish_task)
+
+  cloned = original.clone()
+
+  assert _ids(cloned.tools) == _ids([finish_task])
+
+
+def test_clone_drops_the_tool_of_a_sub_agent_switched_to_chat():
+  """A sub-agent moved to chat mode after construction gets no tool."""
+  original = LlmAgent(
+      name="root",
+      sub_agents=[LlmAgent(name="helper", description="Helps", mode="task")],
+  )
+  original.sub_agents[0].mode = "chat"
+
+  cloned = original.clone()
+
+  assert cloned.tools == []
+
+
+@pytest.mark.parametrize(
+    "agent_factory",
+    [
+        lambda: LlmAgent(name="agent", mode="task"),
+        lambda: LlmAgent(
+            name="root",
+            sub_agents=[
+                LlmAgent(name="helper", description="Helps", mode="task")
+            ],
+        ),
+    ],
+    ids=["finish_task", "sub_agent_tool"],
+)
+def test_clone_does_not_add_back_a_removed_mode_tool(
+    agent_factory: Callable[[], LlmAgent],
+):
+  """A mode tool removed after construction stays removed on the clone."""
+  original = agent_factory()
+  original.tools.clear()
+
+  cloned = original.clone()
+
+  assert cloned.tools == []
+
+
+if __name__ == "__main__":
+  # Run a specific test for debugging
+  test_three_level_nested_agent()

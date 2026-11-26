@@ -1,0 +1,52 @@
+# Agent with Long-Running Tools
+
+This example demonstrates an agent using a long-running tool (`ask_for_approval`).
+
+## Key Flow for Long-Running Tools
+
+1. **Initial Call**: The agent calls the long-running tool (e.g., `ask_for_approval`).
+
+1. **Initial Tool Response**: The tool immediately returns an initial response, typically indicating a "pending" status and a way to track the request (e.g., a `ticket-id`). This is sent back to the agent as a `types.FunctionResponse` (usually processed internally by the runner and then influencing the agent's next turn).
+
+1. **Agent Acknowledges**: The agent processes this initial response and usually informs the user about the pending status.
+
+1. **External Process/Update**: The long-running task progresses externally (e.g., a human approves the request).
+
+1. **❗️Crucial Step: Provide Updated Tool Response❗️**:
+
+   - Once the external process completes or updates, your application **must** construct a new `types.FunctionResponse`.
+   - This response should use the **same `id` and `name`** as the original `FunctionCall` to the long-running tool.
+   - The `response` field within this `types.FunctionResponse` should contain the *updated data* (e.g., `{'status': 'approved', ...}`).
+   - Send this `types.FunctionResponse` back to the agent as a part within a new message using `role="user"`.
+
+   ```python
+   # Example: After external approval
+   updated_tool_output_data = {
+       "status": "approved",
+       "ticketId": ticket_id, # from original call
+       # ... other relevant updated data
+   }
+
+   updated_function_response_part = types.Part(
+       function_response=types.FunctionResponse(
+           id=long_running_function_call.id,   # Original call ID
+           name=long_running_function_call.name, # Original call name
+           response=updated_tool_output_data,
+       )
+   )
+
+   # Send this back to the agent
+   async for _ in runner.run_async(
+       # ... session_id, user_id ...
+       new_message=types.Content(
+           parts=[updated_function_response_part], role="user"
+       ),
+   ):
+       pass  # exhaust generator (or handle events)
+   ```
+
+1. **Agent Acts on Update**: The agent receives this message containing the `types.FunctionResponse` and, based on its instructions, proceeds with the next steps (e.g., calling another tool like `reimburse`).
+
+1. **Application Confirms the Reimbursement**: For amounts of $100 or more, `FunctionTool(require_confirmation=needs_manager_approval)` holds `reimburse` and emits `adk_request_confirmation`. The application answers with a `FunctionResponse` using that confirmation call's `id` and `name`, with a `ToolConfirmation` payload. In `main.py`, `answer_confirmations` confirms at most one call matching the approved ticket's amount and purpose (purpose compared ignoring case and surrounding whitespace); calls without approval are rejected. The instruction and the updated approval response alone do not authorize a reimbursement. The YAML sibling, `tool_human_in_the_loop_config`, gates the same call with `tool_context.request_confirmation()` inside `reimburse` instead, because `AgentConfig` YAML cannot express `require_confirmation` yet.
+
+**Why is this important?** The agent relies on receiving this subsequent `types.FunctionResponse` (provided in a message with `role="user"` containing the specific `Part`) to understand that the long-running task has concluded or its state has changed. Without it, the agent will remain unaware of the outcome of the pending task.
